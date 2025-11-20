@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -63,7 +62,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, ip, err := s.mgr.CreateInstance(orchestrator.Config{
+	id, sshCmd, err := s.mgr.CreateInstance(orchestrator.Config{
 		Image:        req.Image,
 		CPU:          req.CPU,
 		Memory:       req.Memory,
@@ -77,9 +76,9 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"id":   id,
-		"ip":   ip,
-		"info": fmt.Sprintf("Deploying %s. Wait ~10s for boot.", req.Image),
+		"id":          id,
+		"ssh_command": sshCmd,
+		"info":        "Instance created successfully",
 	})
 }
 
@@ -95,8 +94,10 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleManage(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var req PatchRequest
-	json.NewDecoder(r.Body).Decode(&req)
-
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", 400)
+		return
+	}
 	if err := s.mgr.ManageInstance(id, req.Action); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
