@@ -14,14 +14,14 @@ import (
 )
 
 const (
-	KernelPath   = "/var/lib/qudata/images/vmlinux"
-	InstancesDir = "/var/lib/qudata/instances"
-	BinaryPath   = "/usr/local/bin/cloud-hypervisor"
+	KernelPath    = "/var/lib/qudata/images/vmlinux"
+	InstancesDir  = "/var/lib/qudata/instances"
+	BinaryPath    = "/usr/local/bin/cloud-hypervisor"
+	BaseImagePath = "/var/lib/qudata/images/ubuntu.raw"
 )
 
-// Config - параметры запуска
 type Config struct {
-	Image        string // <-- Новое поле (имя докер образа)
+	Image        string
 	CPU          int
 	Memory       int
 	SSHPublicKey string
@@ -73,8 +73,8 @@ func (m *Manager) CreateInstance(cfg Config) (string, string, error) {
 		return "", "", err
 	}
 
-	if err := createTapInterface(tapName, "172.16.0.1"); err != nil {
-		return "", "", fmt.Errorf("network failed: %w", err)
+	if err := createTapInterface(tapName, vmIP); err != nil {
+		return "", "", fmt.Errorf("network setup failed: %w", err)
 	}
 
 	diskPath := fmt.Sprintf("%s/disk.raw", instanceDir)
@@ -114,8 +114,11 @@ func (m *Manager) DeleteInstance(id string) error {
 	}
 
 	stopProcess(inst.Cmd)
+
 	exec.Command("ip", "link", "del", inst.TapDev).Run()
+
 	os.RemoveAll(fmt.Sprintf("%s/%s", InstancesDir, id))
+
 	delete(m.instances, id)
 	return nil
 }
@@ -132,10 +135,12 @@ func (m *Manager) ManageInstance(id string, action string) error {
 	switch action {
 	case "stop":
 		return stopProcess(inst.Cmd)
+
 	case "start":
 		if inst.Cmd != nil && inst.Cmd.ProcessState == nil {
 			return nil
 		}
+
 		instanceDir := fmt.Sprintf("%s/%s", InstancesDir, id)
 		diskPath := fmt.Sprintf("%s/disk.raw", instanceDir)
 		isoPath := fmt.Sprintf("%s/cloud-init.disk", instanceDir)
@@ -146,18 +151,22 @@ func (m *Manager) ManageInstance(id string, action string) error {
 		}
 		inst.Cmd = cmd
 		return nil
+
 	case "reboot":
 		stopProcess(inst.Cmd)
 		time.Sleep(1 * time.Second)
+
 		instanceDir := fmt.Sprintf("%s/%s", InstancesDir, id)
 		diskPath := fmt.Sprintf("%s/disk.raw", instanceDir)
 		isoPath := fmt.Sprintf("%s/cloud-init.disk", instanceDir)
+
 		cmd, err := startCloudHypervisor(id, instanceDir, diskPath, isoPath, inst.TapDev, inst.MacSuffix, inst.LastConfig)
 		if err != nil {
 			return err
 		}
 		inst.Cmd = cmd
 		return nil
+
 	default:
 		return fmt.Errorf("unknown action: %s", action)
 	}
@@ -178,6 +187,7 @@ func startCloudHypervisor(id, dir, disk, iso, tap string, macSuffix int, cfg Con
 	}
 
 	cmd := exec.Command(BinaryPath, args...)
+
 	outfile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err == nil {
 		cmd.Stdout = outfile
@@ -188,6 +198,7 @@ func startCloudHypervisor(id, dir, disk, iso, tap string, macSuffix int, cfg Con
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start binary: %w", err)
 	}
+
 	return cmd, nil
 }
 
@@ -205,14 +216,21 @@ func stopProcess(cmd *exec.Cmd) error {
 	return nil
 }
 
-func createTapInterface(name, gateway string) error {
-	if err := exec.Command("ip", "tuntap", "add", "dev", name, "mode", "tap").Run(); err != nil {
-		return err
+func createTapInterface(tapName string, vmIP string) error {
+	if err := exec.Command("ip", "tuntap", "add", "dev", tapName, "mode", "tap").Run(); err != nil {
+		return fmt.Errorf("tuntap add: %w", err)
 	}
-	if err := exec.Command("ip", "link", "set", "dev", name, "up").Run(); err != nil {
-		return err
+	if err := exec.Command("ip", "link", "set", "dev", tapName, "up").Run(); err != nil {
+		return fmt.Errorf("link set up: %w", err)
 	}
-	exec.Command("ip", "addr", "add", gateway+"/32", "dev", name).Run()
+
+	if err := exec.Command("ip", "addr", "add", "172.16.0.1/32", "dev", tapName).Run(); err != nil {
+	}
+
+	if err := exec.Command("ip", "route", "add", vmIP+"/32", "dev", tapName).Run(); err != nil {
+		return fmt.Errorf("route add: %w", err)
+	}
+
 	return nil
 }
 
@@ -222,11 +240,13 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer in.Close()
+
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
+
 	_, err = io.Copy(out, in)
 	return err
 }
