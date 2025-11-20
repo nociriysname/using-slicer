@@ -7,11 +7,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-
 	"using-slicer/internal/orchestrator"
 )
 
 type CreateRequest struct {
+	Image     string `json:"image"`
 	CPU       int    `json:"cpu"`
 	Memory    int    `json:"memory"`
 	PublicKey string `json:"public_key"`
@@ -31,15 +31,10 @@ func NewServer(mgr *orchestrator.Manager) *Server {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	s := &Server{
-		mgr: mgr,
-		r:   r,
-	}
-
+	s := &Server{mgr: mgr, r: r}
 	s.r.Post("/instances/create", s.handleCreate)
 	s.r.Delete("/instances/{id}", s.handleDelete)
 	s.r.Patch("/instances/{id}", s.handleManage)
-
 	return s
 }
 
@@ -50,10 +45,13 @@ func (s *Server) Run(addr string) error {
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var req CreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		http.Error(w, "Invalid JSON", 400)
 		return
 	}
 
+	if req.Image == "" {
+		req.Image = "ubuntu:22.04"
+	}
 	if req.CPU == 0 {
 		req.CPU = 1
 	}
@@ -61,69 +59,47 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		req.Memory = 1024
 	}
 	if req.PublicKey == "" {
-		http.Error(w, "public_key is required", http.StatusBadRequest)
+		http.Error(w, "public_key is required", 400)
 		return
 	}
 
 	id, ip, err := s.mgr.CreateInstance(orchestrator.Config{
+		Image:        req.Image,
 		CPU:          req.CPU,
 		Memory:       req.Memory,
 		SSHPublicKey: req.PublicKey,
 	})
 
 	if err != nil {
-		http.Error(w, "Failed to create VM: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Create failed: "+err.Error(), 500)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{
-		"id":          id,
-		"ip":          ip,
-		"ssh_command": fmt.Sprintf("ssh ubuntu@%s", ip),
+		"id":   id,
+		"ip":   ip,
+		"info": fmt.Sprintf("Deploying %s. Wait ~10s for boot.", req.Image),
 	})
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if id == "" {
-		http.Error(w, "ID required", http.StatusBadRequest)
-		return
-	}
-
 	if err := s.mgr.DeleteInstance(id); err != nil {
-		http.Error(w, "Failed to delete: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), 500)
 		return
 	}
-
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Instance deleted"))
+	w.Write([]byte("Deleted"))
 }
 
 func (s *Server) handleManage(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if id == "" {
-		http.Error(w, "ID required", http.StatusBadRequest)
-		return
-	}
-
 	var req PatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
-		return
-	}
-
-	if req.Action == "" {
-		http.Error(w, "Action required (start, stop, reboot)", http.StatusBadRequest)
-		return
-	}
+	json.NewDecoder(r.Body).Decode(&req)
 
 	if err := s.mgr.ManageInstance(id, req.Action); err != nil {
-		http.Error(w, "Action failed: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), 500)
 		return
 	}
-
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Instance state updated: " + req.Action))
+	w.Write([]byte("OK: " + req.Action))
 }

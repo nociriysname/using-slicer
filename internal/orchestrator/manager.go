@@ -14,13 +14,14 @@ import (
 )
 
 const (
-	BaseImagePath = "/var/lib/qudata/images/ubuntu.raw"
-	KernelPath    = "/var/lib/qudata/images/vmlinux"
-	InstancesDir  = "/var/lib/qudata/instances"
-	BinaryPath    = "/usr/local/bin/cloud-hypervisor"
+	KernelPath   = "/var/lib/qudata/images/vmlinux"
+	InstancesDir = "/var/lib/qudata/instances"
+	BinaryPath   = "/usr/local/bin/cloud-hypervisor"
 )
 
+// Config - параметры запуска
 type Config struct {
+	Image        string // <-- Новое поле (имя докер образа)
 	CPU          int
 	Memory       int
 	SSHPublicKey string
@@ -55,11 +56,16 @@ func (m *Manager) CreateInstance(cfg Config) (string, string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	id := uuid.New().String()
-	currentIPCounter := m.ipCounter
-	vmIP := fmt.Sprintf("172.16.0.%d", currentIPCounter)
-	m.ipCounter++
+	sourceImagePath, err := EnsureImageReady(cfg.Image)
+	if err != nil {
+		return "", "", fmt.Errorf("image error: %w", err)
+	}
 
+	id := uuid.New().String()
+
+	m.ipCounter++
+	currentSuffix := m.ipCounter
+	vmIP := fmt.Sprintf("172.16.0.%d", currentSuffix)
 	tapName := fmt.Sprintf("tap%s", id[:8])
 
 	instanceDir := fmt.Sprintf("%s/%s", InstancesDir, id)
@@ -68,11 +74,11 @@ func (m *Manager) CreateInstance(cfg Config) (string, string, error) {
 	}
 
 	if err := createTapInterface(tapName, "172.16.0.1"); err != nil {
-		return "", "", fmt.Errorf("network setup failed: %w", err)
+		return "", "", fmt.Errorf("network failed: %w", err)
 	}
 
 	diskPath := fmt.Sprintf("%s/disk.raw", instanceDir)
-	if err := copyFile(BaseImagePath, diskPath); err != nil {
+	if err := copyFile(sourceImagePath, diskPath); err != nil {
 		return "", "", fmt.Errorf("disk copy failed: %w", err)
 	}
 
@@ -81,7 +87,7 @@ func (m *Manager) CreateInstance(cfg Config) (string, string, error) {
 		return "", "", fmt.Errorf("cloud-init failed: %w", err)
 	}
 
-	cmd, err := startCloudHypervisor(id, instanceDir, diskPath, isoPath, tapName, currentIPCounter, cfg)
+	cmd, err := startCloudHypervisor(id, instanceDir, diskPath, isoPath, tapName, currentSuffix, cfg)
 	if err != nil {
 		return "", "", err
 	}
@@ -91,7 +97,7 @@ func (m *Manager) CreateInstance(cfg Config) (string, string, error) {
 		Cmd:        cmd,
 		IP:         vmIP,
 		TapDev:     tapName,
-		MacSuffix:  currentIPCounter,
+		MacSuffix:  currentSuffix,
 		LastConfig: cfg,
 	}
 
@@ -108,11 +114,8 @@ func (m *Manager) DeleteInstance(id string) error {
 	}
 
 	stopProcess(inst.Cmd)
-
 	exec.Command("ip", "link", "del", inst.TapDev).Run()
-
 	os.RemoveAll(fmt.Sprintf("%s/%s", InstancesDir, id))
-
 	delete(m.instances, id)
 	return nil
 }
@@ -129,12 +132,10 @@ func (m *Manager) ManageInstance(id string, action string) error {
 	switch action {
 	case "stop":
 		return stopProcess(inst.Cmd)
-
 	case "start":
 		if inst.Cmd != nil && inst.Cmd.ProcessState == nil {
 			return nil
 		}
-
 		instanceDir := fmt.Sprintf("%s/%s", InstancesDir, id)
 		diskPath := fmt.Sprintf("%s/disk.raw", instanceDir)
 		isoPath := fmt.Sprintf("%s/cloud-init.disk", instanceDir)
@@ -145,23 +146,18 @@ func (m *Manager) ManageInstance(id string, action string) error {
 		}
 		inst.Cmd = cmd
 		return nil
-
 	case "reboot":
 		stopProcess(inst.Cmd)
-
 		time.Sleep(1 * time.Second)
-
 		instanceDir := fmt.Sprintf("%s/%s", InstancesDir, id)
 		diskPath := fmt.Sprintf("%s/disk.raw", instanceDir)
 		isoPath := fmt.Sprintf("%s/cloud-init.disk", instanceDir)
-
 		cmd, err := startCloudHypervisor(id, instanceDir, diskPath, isoPath, inst.TapDev, inst.MacSuffix, inst.LastConfig)
 		if err != nil {
 			return err
 		}
 		inst.Cmd = cmd
 		return nil
-
 	default:
 		return fmt.Errorf("unknown action: %s", action)
 	}
@@ -182,30 +178,24 @@ func startCloudHypervisor(id, dir, disk, iso, tap string, macSuffix int, cfg Con
 	}
 
 	cmd := exec.Command(BinaryPath, args...)
-
 	outfile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err == nil {
 		cmd.Stdout = outfile
 		cmd.Stderr = outfile
 	}
 
-	log.Printf("[Manager] Starting VM %s with args: %v", id, args)
+	log.Printf("Starting VM %s (Image: %s)", id, cfg.Image)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start binary: %w", err)
 	}
-
 	return cmd, nil
 }
 
 func stopProcess(cmd *exec.Cmd) error {
 	if cmd != nil && cmd.Process != nil {
 		cmd.Process.Signal(syscall.SIGTERM)
-
 		done := make(chan error, 1)
-		go func() {
-			done <- cmd.Wait()
-		}()
-
+		go func() { done <- cmd.Wait() }()
 		select {
 		case <-time.After(3 * time.Second):
 			cmd.Process.Kill()
@@ -222,8 +212,7 @@ func createTapInterface(name, gateway string) error {
 	if err := exec.Command("ip", "link", "set", "dev", name, "up").Run(); err != nil {
 		return err
 	}
-	if err := exec.Command("ip", "addr", "add", gateway+"/32", "dev", name).Run(); err != nil {
-	}
+	exec.Command("ip", "addr", "add", gateway+"/32", "dev", name).Run()
 	return nil
 }
 
@@ -233,13 +222,11 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer in.Close()
-
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
-
 	_, err = io.Copy(out, in)
 	return err
 }
