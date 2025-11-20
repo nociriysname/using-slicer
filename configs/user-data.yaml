@@ -1,0 +1,14 @@
+users:
+  - name: ubuntu
+    ssh-authorized-keys:
+      - {{.SSHKey}}
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    groups: users, admin
+    shell: /bin/bash
+
+package_update: false
+# packages:
+#   - nginx
+
+runcmd:
+  - echo "Hello form MicroVM" > /var/tmp/hello
