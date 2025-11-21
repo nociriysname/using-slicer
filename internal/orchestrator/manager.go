@@ -92,6 +92,8 @@ func (m *Manager) CreateInstance(cfg Config) (string, string, error) {
 		log.Printf("WARNING: Direct injection failed: %v", err)
 	}
 
+	allowPort(currentPort)
+
 	cmd, err := startQemu(id, instanceDir, diskPath, currentPort, cfg)
 	if err != nil {
 		return "", "", err
@@ -118,6 +120,9 @@ func (m *Manager) DeleteInstance(id string) error {
 	}
 
 	stopProcess(inst.Cmd)
+
+	denyPort(inst.HostPort)
+
 	os.RemoveAll(fmt.Sprintf("%s/%s", InstancesDir, id))
 	delete(m.instances, id)
 	return nil
@@ -137,17 +142,23 @@ func (m *Manager) ManageInstance(id string, action string) error {
 
 	switch action {
 	case "stop":
-		return stopProcess(inst.Cmd)
+		err := stopProcess(inst.Cmd)
+		denyPort(inst.HostPort)
+		return err
+
 	case "start":
 		if inst.Cmd != nil && inst.Cmd.ProcessState == nil {
 			return nil
 		}
+		allowPort(inst.HostPort)
+
 		cmd, err := startQemu(id, instanceDir, diskPath, inst.HostPort, inst.LastConfig)
 		if err != nil {
 			return err
 		}
 		inst.Cmd = cmd
 		return nil
+
 	case "reboot":
 		stopProcess(inst.Cmd)
 		time.Sleep(1 * time.Second)
@@ -157,9 +168,20 @@ func (m *Manager) ManageInstance(id string, action string) error {
 		}
 		inst.Cmd = cmd
 		return nil
+
 	default:
 		return fmt.Errorf("unknown action: %s", action)
 	}
+}
+
+func allowPort(port int) {
+	portStr := fmt.Sprintf("%d", port)
+	exec.Command("iptables", "-I", "INPUT", "-p", "tcp", "--dport", portStr, "-j", "ACCEPT").Run()
+}
+
+func denyPort(port int) {
+	portStr := fmt.Sprintf("%d", port)
+	exec.Command("iptables", "-D", "INPUT", "-p", "tcp", "--dport", portStr, "-j", "ACCEPT").Run()
 }
 
 func InjectKeyDirectly(diskPath, pubKey string) error {
@@ -234,13 +256,13 @@ func startQemu(id, dir, disk string, port int, cfg Config) (*exec.Cmd, error) {
 		"-accel", "tcg",
 		"-cpu", "max",
 		"-kernel", KernelPath,
-		// root=/dev/vda (без 1, т.к. чаще всего у нас raw диск без таблицы)
-		"-append", "console=ttyS0 root=/dev/vda rw panic=1",
+		"-append", "console=ttyS0 root=/dev/vda rw panic=1", // vda без 1 для raw дисков
 		"-drive", fmt.Sprintf("file=%s,format=raw,if=virtio", disk),
+		// SLIRP Сеть с пробросом порта
 		"-netdev", fmt.Sprintf("user,id=mynet0,hostfwd=tcp::%d-:22", port),
 		"-device", "virtio-net-pci,netdev=mynet0",
 
-		//"-device", "vfio-pci,host=00:06.0", комментим до момента когда будет реальное железо
+		// "-device", "vfio-pci,host=00:06.0", // GPU отключена до лучших времен
 	}
 
 	cmd := exec.Command(BinaryPath, args...)
