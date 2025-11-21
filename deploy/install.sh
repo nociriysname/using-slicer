@@ -1,33 +1,40 @@
 #!/bin/bash
 set -e
 
-echo ">>> [1/4] Установка утилит..."
+echo ">>> [1/6] Установка системных утилит..."
 sudo apt-get update
-sudo apt-get install -y wget curl qemu-utils cloud-image-utils net-tools docker.io
+sudo apt-get install -y wget curl qemu-system-x86 genisoimage qemu-utils cloud-image-utils net-tools docker.io
 
-echo ">>> [2/4] Установка Cloud Hypervisor..."
-if [ ! -f "/usr/local/bin/cloud-hypervisor" ]; then
-    wget https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/v40.0/cloud-hypervisor -O /usr/local/bin/cloud-hypervisor
-    chmod +x /usr/local/bin/cloud-hypervisor
+echo ">>> [2/6] Установка Go 1.25..."
+sudo rm -rf /usr/local/go
+wget https://go.dev/dl/go1.25.0.linux-amd64.tar.gz -O /tmp/go.tar.gz
+sudo tar -C /usr/local -xzf /tmp/go.tar.gz
+rm /tmp/go.tar.gz
+
+if ! grep -q "/usr/local/go/bin" /etc/profile; then
+    echo 'export PATH=$PATH:/usr/local/go/bin' | sudo tee -a /etc/profile
 fi
+export PATH=$PATH:/usr/local/go/bin
 
-echo ">>> [3/4] Подготовка папок..."
+echo ">>> [3/6] Настройка сети (IP Forwarding)..."
+sudo sysctl -w net.ipv4.ip_forward=1
+echo "net.ipv4.ip_forward=1" | sudo tee /etc/sysctl.d/99-qudata.conf
+
+echo ">>> [4/6] Подготовка папок..."
 mkdir -p /var/lib/qudata/images
 mkdir -p /var/lib/qudata/instances
 mkdir -p /var/lib/qudata/cache
 
-echo ">>> [4/4] Скачивание ресурсов..."
+echo ">>> [5/6] Скачивание Ядра (Latest)..."
+KERNEL_URL=$(curl -s https://api.github.com/repos/cloud-hypervisor/linux/releases/latest | grep browser_download_url | grep vmlinux | head -n 1 | cut -d '"' -f 4)
+echo "Downloading kernel from: $KERNEL_URL"
+wget "$KERNEL_URL" -O /var/lib/qudata/images/vmlinux
 
-if [ ! -f "/var/lib/qudata/images/vmlinux" ]; then
-    echo "Downloading Kernel (6.8.0)..."
-    wget https://github.com/cloud-hypervisor/linux/releases/download/ch-6.8.0/vmlinux-6.8.0 -O /var/lib/qudata/images/vmlinux
-fi
-
+echo ">>> [6/6] Скачивание базового образа Ubuntu..."
 if [ ! -f "/var/lib/qudata/images/ubuntu.raw" ]; then
-    echo "Downloading Ubuntu Cloud Image..."
     wget -q https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img -O /tmp/ubuntu.qcow2
     qemu-img convert -f qcow2 -O raw /tmp/ubuntu.qcow2 /var/lib/qudata/images/ubuntu.raw
     rm /tmp/ubuntu.qcow2
 fi
 
-echo ">>> Готово! Окружение настроено."
+echo ">>> Готово! Go 1.25 установлен, QEMU готов."
